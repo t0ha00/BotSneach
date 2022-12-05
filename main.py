@@ -10,9 +10,9 @@ import mariadb
 from deepface import DeepFace
 
 TOKEN = ''
-PHOTO_DIR = "\\\\192.168.100.144\\surveillance\\@Snapshot"
-NEW_DIR = "C:\PhotoRepos\\"
-Neraspr_dir = "C:\TEST\\"
+PHOTO_DIR = "\\\\192.168.100.144\\surveillance\\@Snapshot\\"
+NEW_DIR = "C:\\PhotoRepos\\"
+Neraspr_dir = "C:\\NerasprDir\\"
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
@@ -46,34 +46,64 @@ async def main_work():
                             # Если в папке всего одно фото
                             if len([f for f in os.listdir(NEW_DIR + dir) if
                                     os.path.isfile(os.path.join(NEW_DIR + dir, f))]) == 1:
-                                cur.execute("select * from admins where notifications=1")
-                                for i in cur:
-                                    await bot.send_message(chat_id=i[1], text=f"{file}!{dir}")
-                                    await bot.send_photo(chat_id=i[1], photo=open(PHOTO_DIR + file, 'rb'))
-                                shutil.move(PHOTO_DIR + file, Neraspr_dir)
+                                newname = dir + '!' + file
+                                os.rename(PHOTO_DIR + file, PHOTO_DIR + newname)
+                                shutil.move(PHOTO_DIR + newname, Neraspr_dir)
                                 break
                             # Если половина или больше фото совпадают перемещаем фото туда
                             elif len(df.values.tolist()) >= len([f for f in os.listdir(NEW_DIR + dir) if
                                                                  os.path.isfile(os.path.join(NEW_DIR + dir, f))]) / 2:
-                                cur.execute("select * from admins where notifications=1")
-                                for i in cur:
-                                    button = InlineKeyboardButton('Правильно',
-                                                                  callback_data='photo_right')
-                                    button1 = InlineKeyboardButton('Неправильно', callback_data='photo_not_right')
-                                    kb = InlineKeyboardMarkup().add(button).add(button1)
-                                    await bot.send_message(i[1], text=f"{file}!{dir}",
-                                                           reply_markup=kb)
-                                    await bot.send_photo(i[1], photo=open(PHOTO_DIR + file, 'rb'))
                                 datetime = file[9:17] + file[18:24]
-                                cur.execute("Insert into Fotos (ID, Time, Worker) values (?, ?, ?)", (file, datetime, dir))
+                                newname = dir + '!' + file
+                                os.rename(PHOTO_DIR + file, PHOTO_DIR + newname)
+                                shutil.move(PHOTO_DIR + newname, Neraspr_dir)
+                                cur.execute("Insert into Fotos (ID, Time, Worker) values (?, ?, ?)", (newname, datetime, dir))
                                 conn.commit()
-                                shutil.move(PHOTO_DIR + file, Neraspr_dir)
                                 break
                 shutil.move(PHOTO_DIR + file, Neraspr_dir)
             except Exception as err:
                 print(err)
                 os.remove(PHOTO_DIR + file)
 
+
+#Распределяем фотографии
+@dp.message_handler(commands=['raspr'], state='*')
+async def raspr_photos(message: types.Message):
+    for root, dirs, files in os.walk(Neraspr_dir):
+        if not files:
+            await bot.send_message(message.from_user.id, "Нет нераспределенных фотографий")
+            break
+        for file in files:
+            state = dp.current_state(user=message.from_user.id)
+            await state.set_state(UserStates.all()[0])
+            await bot.send_message(message.from_user.id, text=f"Всего {len(files)}")
+            button = InlineKeyboardButton('Правильно',
+                                          callback_data=file)
+            button1 = InlineKeyboardButton('Неправильно', callback_data='photo_not_right')
+            kb = InlineKeyboardMarkup().add(button).add(button1)
+            await bot.send_photo(message.from_user.id, photo=open(Neraspr_dir + file, 'rb'))
+            await bot.send_message(message.from_user.id, text=file,
+                                   reply_markup=kb)
+            break
+
+
+#Распределяем фотографии
+@dp.callback_query_handler(lambda c: c.data == 'raspr_photo_next', state='*')
+async def raspr_photos_next(query: types.CallbackQuery):
+    for root, dirs, files in os.walk(Neraspr_dir):
+        if not files:
+            await bot.send_message(query.message.chat.id, "Нет нераспределенных фотографий")
+            break
+        for file in files:
+            await bot.send_message(query.message.chat.id, text=f"Всего {len(files)}")
+            button = InlineKeyboardButton('Правильно',
+                                          callback_data='photo_right')
+            button1 = InlineKeyboardButton('Неправильно', callback_data='photo_not_right')
+            kb = InlineKeyboardMarkup().add(button).add(button1)
+            await bot.send_photo(query.message.chat.id, photo=open(Neraspr_dir + file, 'rb'))
+            await bot.send_message(query.message.chat.id, text=file,
+                                   reply_markup=kb)
+            break
 
 # -----Команда старт
 @dp.message_handler(commands=['start'], state='*')
@@ -91,7 +121,6 @@ async def start_command(message: types.Message):
 # -----Добавляем или удаляем из списка рассылки
 @dp.callback_query_handler(lambda c: c.data == 'add_user_admin_list_button', state='*')
 async def add_user_admin_list_command(query: types.CallbackQuery):
-
     try:
         cur.execute("select * from admins where id=?", (query.message.chat.id,))
         #Проверяем есть ли пользователь в списке рассылки
@@ -141,6 +170,8 @@ async def admin_notification_command(query: types.CallbackQuery):
 #Команда настройки
 @dp.message_handler(commands=['settings'], state='*')
 async def settings_command(message: types.Message):
+    state = dp.current_state(user=message.from_user.id)
+    await state.reset_state()
     try:
         cur.execute("select * from admins where id=?", (message.from_user.id,))
         kb = InlineKeyboardMarkup()
@@ -182,31 +213,39 @@ async def button_right_command(query: types.CallbackQuery):
 
 
 #Кнопка когда правильно
-@dp.callback_query_handler(state=UserStates.USER_STATE_0)
+@dp.callback_query_handler(lambda c: c.data == 'photo_right', state='*')
 async def button_right_command(query: types.CallbackQuery):
-    data = query.data
-    file = data.split('!')[0]
-    dirr = data.split('!')[1]
-    shutil.move(PHOTO_DIR + file, NEW_DIR + dirr)
+    dirr = query.message.text.split('!')[0]
+    shutil.move(Neraspr_dir + query.message.text, NEW_DIR + dirr)
     state = dp.current_state(user=query.from_user.id)
+    button = InlineKeyboardButton('Дальше', callback_data='raspr_photo_next')
+    kb = InlineKeyboardMarkup().add(button)
     await state.reset_state()
-    await bot.send_message(query.message.chat.id,
-                           "Спасибо! Переместил в папку")
+    await query.message.edit_text(text="Спасибо! Переместил в папку", reply_markup=kb)
 
 
 #Кнопка когда неправильно
 @dp.callback_query_handler(lambda c: c.data == 'photo_not_right', state='*')
 async def button_not_right_command(query: types.CallbackQuery):
     state = dp.current_state(user=query.from_user.id)
-    file = query.message.text.split('!')[0]
     kb = InlineKeyboardMarkup()
     for root, dirs, files in os.walk(NEW_DIR):
         for dir in dirs:
-            button = InlineKeyboardButton(text=dir, callback_data=file + '!' + dir)
+            button = InlineKeyboardButton(text=dir, callback_data=query.message.text)
             kb.add(button)
     await state.set_state(UserStates.all()[0])
-    await bot.send_message(query.message.chat.id,
-                           "Выберите кто:", reply_markup=kb)
+    await query.message.edit_text(text="Выберите кто:", reply_markup=kb)
+
+
+@dp.callback_query_handler(state=UserStates.USER_STATE_0)
+async def choose_right(query: types.CallbackQuery):
+    dirr = query.data.split('!')[0]
+    shutil.move(Neraspr_dir + query.data, NEW_DIR + dirr)
+    state = dp.current_state(user=query.from_user.id)
+    button = InlineKeyboardButton('Дальше', callback_data='raspr_photo_next')
+    kb = InlineKeyboardMarkup().add(button)
+    await state.reset_state()
+    await query.message.edit_text(text="Спасибо! Переместил в папку", reply_markup=kb)
 
 
 @dp.callback_query_handler(lambda c: c.data == 'start_function', state='*')
@@ -224,7 +263,7 @@ async def noon_print():
 
 async def scheduler():
 
-    aioschedule.every().hour.do(main_work)
+    aioschedule.every(30).minutes.do(main_work)
     while True:
         await aioschedule.run_pending()
         await asyncio.sleep(1)
